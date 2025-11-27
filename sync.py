@@ -135,17 +135,41 @@ class OdooWooCommerceStockSync:
 
         print(f"\nFetching stock for {len(self.product_mapping)} products from Odoo...")
 
-        for barcode, wc_id in self.product_mapping.items():
+        for barcode, wc_id_raw in self.product_mapping.items():
             product = self.get_product_stock_by_barcode(barcode)
-            if product:
-                products_stock[barcode] = {
-                    'name': product['name'],
-                    'qty': product['qty_available'],
-                    'wc_id': int(wc_id)
-                }
-                print(f"  OK: {product['name']} ({barcode}): {product['qty_available']} units -> WC ID: {wc_id}")
-            else:
+            if not product:
                 print(f"  SKIPPED: barcode {barcode}")
+                continue
+
+            # Normalize mapping value: allow single id, comma-separated ids, or list of ids.
+            wc_ids = []
+            if isinstance(wc_id_raw, list):
+                wc_ids = wc_id_raw
+            else:
+                # Convert to string and handle empty values
+                wc_id_str = '' if wc_id_raw is None else str(wc_id_raw)
+                if wc_id_str.strip() == '':
+                    print(f"  WARNING: No WC ID mapped for barcode {barcode} (skipping)")
+                    continue
+
+                # Support comma-separated IDs like "14050, 14060"
+                parts = [p.strip() for p in wc_id_str.split(',') if p.strip()]
+                for p in parts:
+                    try:
+                        wc_ids.append(int(p))
+                    except ValueError:
+                        print(f"  WARNING: Invalid WC ID '{p}' for barcode {barcode} in mapping (skipping that id)")
+
+            if not wc_ids:
+                print(f"  WARNING: No valid WC IDs found for barcode {barcode} (skipping)")
+                continue
+
+            products_stock[barcode] = {
+                'name': product['name'],
+                'qty': product['qty_available'],
+                'wc_id': wc_ids
+            }
+            print(f"  OK: {product['name']} ({barcode}): {product['qty_available']} units -> WC ID(s): {', '.join(str(i) for i in wc_ids)}")
 
         return products_stock
 
@@ -201,18 +225,23 @@ class OdooWooCommerceStockSync:
             total_updated = 0
             total_errors = 0
 
-            # Update each product in WooCommerce
+            # Update each product in WooCommerce. A mapping may point to multiple WC product IDs.
             for barcode, data in products_stock.items():
                 product_name = data['name']
                 qty = data['qty']
-                wc_id = data['wc_id']
+                wc_ids = data['wc_id']
 
-                print(f"\n  Product: {product_name} ({barcode}): {qty} units -> WC #{wc_id}")
+                # Ensure wc_ids is a list
+                if isinstance(wc_ids, int):
+                    wc_ids = [wc_ids]
 
-                if self.update_woocommerce_stock(wc_id, qty, product_name):
-                    total_updated += 1
-                else:
-                    total_errors += 1
+                print(f"\n  Product: {product_name} ({barcode}): {qty} units -> WC ID(s): {', '.join(str(i) for i in wc_ids)}")
+
+                for wc_id in wc_ids:
+                    if self.update_woocommerce_stock(wc_id, qty, product_name):
+                        total_updated += 1
+                    else:
+                        total_errors += 1
 
             print(f"\nSynchronization completed")
             print(f"Updated: {total_updated} products")
