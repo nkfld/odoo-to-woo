@@ -174,26 +174,99 @@ class OdooWooCommerceStockSync:
         return products_stock
 
     # -------------------- WOOCOMMERCE --------------------
-    def update_woocommerce_stock(self, product_id, stock_quantity, product_name=""):
+    def update_woocommerce_stock(self, product_id, stock_quantity, product_name="", barcode=None):
         """
         Update product stock level in WooCommerce.
         """
         try:
-            url = f"{self.wc_url}/wp-json/wc/v3/products/{product_id}"
             auth = base64.b64encode(f"{self.wc_consumer_key}:{self.wc_consumer_secret}".encode()).decode()
             headers = {'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}
 
-            payload = {
-                'stock_quantity': int(stock_quantity),
-                'manage_stock': True,
-                'stock_status': 'instock' if stock_quantity > 0 else 'outofstock'
-            }
+            # First, fetch product to detect type (simple vs variable)
+            product_url = f"{self.wc_url}/wp-json/wc/v3/products/{product_id}"
+            prod_resp = requests.get(product_url, headers=headers, timeout=20)
+            if prod_resp.status_code == 404:
+                # Product not found at product endpoint - nothing we can do
+                print(f"    WARNING: WC #{product_id}: product not found (404)")
+                return False
 
-            response = requests.put(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
+            prod_resp.raise_for_status()
+            product = prod_resp.json()
 
-            print(f"    OK: WC #{product_id} ({product_name}): updated to {stock_quantity} units")
-            return True
+            # If the fetched object is a variation it may include 'parent_id' -> update variation directly
+            parent_id = product.get('parent_id') if isinstance(product, dict) else None
+            if parent_id:
+                vid = product.get('id')
+                var_update_url = f"{self.wc_url}/wp-json/wc/v3/products/{parent_id}/variations/{vid}"
+                payload = {
+                    'stock_quantity': int(stock_quantity),
+                    'manage_stock': True,
+                    'stock_status': 'instock' if stock_quantity > 0 else 'outofstock'
+                }
+                try:
+                    r = requests.put(var_update_url, headers=headers, json=payload, timeout=20)
+                    r.raise_for_status()
+                    print(f"    OK: WC #{parent_id} - variation #{vid} ({product_name}): updated to {stock_quantity} units")
+                    return True
+                except requests.exceptions.HTTPError as e:
+                    print(f"    ERROR: WC #{parent_id} - variation #{vid}: HTTP {e.response.status_code} - {e}")
+                    return False
+                except Exception as e:
+                    print(f"    ERROR: WC #{parent_id} - variation #{vid}: update failed - {e}")
+                    return False
+
+            if product.get('type') == 'variable':
+                # For variable products we must update the matching variation(s).
+                if not barcode:
+                    print(f"    WARNING: WC #{product_id} is variable but no barcode provided to match variation (skipping)")
+                    return False
+
+                # Fetch variations and try to find variation with SKU == barcode
+                variations_url = f"{self.wc_url}/wp-json/wc/v3/products/{product_id}/variations?per_page=100"
+                var_resp = requests.get(variations_url, headers=headers, timeout=20)
+                var_resp.raise_for_status()
+                variations = var_resp.json()
+
+                matched = [v for v in variations if str(v.get('sku') or '') == str(barcode)]
+                if not matched:
+                    print(f"    WARNING: WC #{product_id} (variable): no variation with SKU '{barcode}' found (skipping)")
+                    return False
+
+                success = True
+                for v in matched:
+                    vid = v.get('id')
+                    var_update_url = f"{self.wc_url}/wp-json/wc/v3/products/{product_id}/variations/{vid}"
+                    payload = {
+                        'stock_quantity': int(stock_quantity),
+                        'manage_stock': True,
+                        'stock_status': 'instock' if stock_quantity > 0 else 'outofstock'
+                    }
+                    try:
+                        r = requests.put(var_update_url, headers=headers, json=payload, timeout=20)
+                        r.raise_for_status()
+                        print(f"    OK: WC #{product_id} - variation #{vid} ({product_name}): updated to {stock_quantity} units")
+                    except requests.exceptions.HTTPError as e:
+                        print(f"    ERROR: WC #{product_id} - variation #{vid}: HTTP {e.response.status_code} - {e}")
+                        success = False
+                    except Exception as e:
+                        print(f"    ERROR: WC #{product_id} - variation #{vid}: update failed - {e}")
+                        success = False
+
+                return success
+
+            else:
+                # Simple product - update directly
+                payload = {
+                    'stock_quantity': int(stock_quantity),
+                    'manage_stock': True,
+                    'stock_status': 'instock' if stock_quantity > 0 else 'outofstock'
+                }
+
+                response = requests.put(product_url, headers=headers, json=payload, timeout=20)
+                response.raise_for_status()
+
+                print(f"    OK: WC #{product_id} ({product_name}): updated to {stock_quantity} units")
+                return True
 
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
@@ -238,7 +311,7 @@ class OdooWooCommerceStockSync:
                 print(f"\n  Product: {product_name} ({barcode}): {qty} units -> WC ID(s): {', '.join(str(i) for i in wc_ids)}")
 
                 for wc_id in wc_ids:
-                    if self.update_woocommerce_stock(wc_id, qty, product_name):
+                    if self.update_woocommerce_stock(wc_id, qty, product_name, barcode=barcode):
                         total_updated += 1
                     else:
                         total_errors += 1
