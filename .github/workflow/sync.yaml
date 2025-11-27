@@ -1,0 +1,39 @@
+name: odoo to woo stock sync
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch: # Możliwość ręcznego uruchomienia
+
+jobs:
+  sync-orders:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        pip install requests
+        
+    - name: Sync Odoo to WooCommerce Stock
+      env:
+        # WooCommerce credentials
+        WC_URL: ${{ secrets.WC_URL }}
+        WC_CONSUMER_KEY: ${{ secrets.WC_CONSUMER_KEY }}
+        WC_CONSUMER_SECRET: ${{ secrets.WC_CONSUMER_SECRET }}
+        
+        # Odoo credentials
+        ODOO_URL: ${{ secrets.ODOO_URL }}
+        ODOO_DB: ${{ secrets.ODOO_DB }}
+        ODOO_USER: ${{ secrets.ODOO_USER }}
+        ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
+        ODOO_LOCATION_ID: ${{ secrets.ODOO_LOCATION_ID }}
+        
+      run: python sync.py
