@@ -1,8 +1,6 @@
 name: odoo to woo stock sync
 
 on:
-  schedule:
-    - cron: "0 */2 * * *"
   workflow_dispatch: # Możliwość ręcznego uruchomienia
 
 jobs:
